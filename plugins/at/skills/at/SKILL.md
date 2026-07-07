@@ -1,13 +1,13 @@
 ---
 name: at
-description: Documentation for /at and /defer. Runtime scheduling is handled locally by a UserPromptSubmit hook.
+description: Documentation for /at, /defer, and /at stop. Runtime scheduling is handled locally by a UserPromptSubmit hook.
 ---
 
-# /at and /defer
+# /at, /defer, and /at stop
 
 ## Goal
 
-Document `/at` and `/defer`. Actual scheduling is done locally inside `hooks/at-user-prompt-submit.js`, not by model tool calls.
+Document `/at`, `/defer`, and stop commands. Actual scheduling is done locally inside `hooks/at-user-prompt-submit.js`, not by model tool calls.
 
 ## Input
 
@@ -28,6 +28,13 @@ Use `/defer` in this format:
 - `<prompt>`
 - `| <prompt>`
 
+Use stop commands in this format:
+
+- `/at stop`
+- `/at stop all`
+- `/at stop <id>`
+- `/defer stop`
+
 ## Behavior
 
 - The local hook parses command and prompt.
@@ -38,6 +45,9 @@ Use `/defer` in this format:
 - If a rate-limit window is exhausted, it schedules for `reset + 2 minutes`.
 - If quota is currently available, it schedules for `now + 2 minutes`.
 - If no fresh local quota snapshot exists, `/defer` blocks with an error and does not schedule.
+- `/at stop` removes the latest scheduled prompt in the current thread.
+- `/at stop all` removes all scheduled prompts in the current thread.
+- `/at stop <id>` removes one specific scheduled prompt by id.
 
 ## Scheduling
 

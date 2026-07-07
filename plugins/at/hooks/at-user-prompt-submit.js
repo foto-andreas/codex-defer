@@ -9,6 +9,8 @@ const USAGE_AT =
   "Usage: /at <time> | <prompt>. Example: /at 22:22 | zeige die uhrzeit";
 const USAGE_DEFER =
   "Usage: /defer <prompt>. Example: /defer | pruefe in 2 minuten erneut";
+const USAGE_STOP =
+  "Usage: /at stop [all|<id>] or /defer stop [all|<id>].";
 
 const TWO_MINUTES_MS = 2 * 60 * 1000;
 const MAX_RATE_LIMIT_SNAPSHOT_AGE_MS = 24 * 60 * 60 * 1000;
@@ -70,6 +72,25 @@ function parseAtPrompt(promptText) {
   return { kind: "at", timeText, scheduledPrompt };
 }
 
+function parseStopPrompt(promptText) {
+  const trimmed = String(promptText || "").trim();
+  const match = trimmed.match(/^\/(at|defer)\s+(stop|cancel)(?:\s+([^\s]+))?\s*$/i);
+  if (!match) {
+    return null;
+  }
+
+  const rawScope = String(match[3] || "").trim();
+  if (!rawScope) {
+    return { kind: "stop", scope: "last" };
+  }
+
+  if (/^all$/i.test(rawScope)) {
+    return { kind: "stop", scope: "all" };
+  }
+
+  return { kind: "stop", scope: "id", automationId: rawScope };
+}
+
 function parseDeferPrompt(promptText) {
   const trimmed = String(promptText || "").trim();
   if (!/^\/defer\b/i.test(trimmed)) {
@@ -89,6 +110,11 @@ function parseDeferPrompt(promptText) {
 }
 
 function parseCommand(promptText) {
+  const stopCommand = parseStopPrompt(promptText);
+  if (stopCommand) {
+    return stopCommand;
+  }
+
   const atCommand = parseAtPrompt(promptText);
   if (atCommand) {
     return atCommand;
@@ -577,6 +603,126 @@ function getMostRecentRateLimitSnapshot(codexHome, sessionId) {
   return null;
 }
 
+function parseTomlStringValue(content, key) {
+  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*"(.*)"\\s*$`, "m");
+  const match = String(content || "").match(pattern);
+  if (!match) {
+    return null;
+  }
+  return String(match[1] || "");
+}
+
+function parseTomlNumberValue(content, key) {
+  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*$`, "m");
+  const match = String(content || "").match(pattern);
+  if (!match) {
+    return null;
+  }
+
+  const numeric = Number(match[1]);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return numeric;
+}
+
+function loadAtAutomationMetadata(automationDir) {
+  const tomlPath = path.join(automationDir, "automation.toml");
+  if (!fs.existsSync(tomlPath)) {
+    return null;
+  }
+
+  let content;
+  try {
+    content = fs.readFileSync(tomlPath, "utf8");
+  } catch (error) {
+    return null;
+  }
+
+  const id = parseTomlStringValue(content, "id");
+  if (!id || !id.startsWith("at-")) {
+    return null;
+  }
+
+  const targetThreadId = parseTomlStringValue(content, "target_thread_id");
+  const status = parseTomlStringValue(content, "status") || "ACTIVE";
+  const updatedAt = parseTomlNumberValue(content, "updated_at");
+  const createdAt = parseTomlNumberValue(content, "created_at");
+
+  let mtimeMs = 0;
+  try {
+    mtimeMs = Number(fs.statSync(tomlPath).mtimeMs || 0);
+  } catch (error) {
+    mtimeMs = 0;
+  }
+
+  return {
+    id,
+    automationDir,
+    tomlPath,
+    targetThreadId,
+    status,
+    updatedAt,
+    createdAt,
+    mtimeMs,
+  };
+}
+
+function listAtAutomationsForThread(codexHome, sessionId) {
+  const automationsRoot = path.join(codexHome, "automations");
+  if (!fs.existsSync(automationsRoot)) {
+    return [];
+  }
+
+  let entries;
+  try {
+    entries = fs.readdirSync(automationsRoot, { withFileTypes: true });
+  } catch (error) {
+    return [];
+  }
+
+  const result = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("at-")) {
+      continue;
+    }
+
+    const metadata = loadAtAutomationMetadata(path.join(automationsRoot, entry.name));
+    if (!metadata) {
+      continue;
+    }
+
+    if (String(metadata.targetThreadId || "").trim() !== sessionId) {
+      continue;
+    }
+
+    result.push(metadata);
+  }
+
+  return result;
+}
+
+function getAutomationSortTimestamp(meta) {
+  if (Number.isFinite(meta && meta.updatedAt)) {
+    return Number(meta.updatedAt);
+  }
+  if (Number.isFinite(meta && meta.createdAt)) {
+    return Number(meta.createdAt);
+  }
+  if (Number.isFinite(meta && meta.mtimeMs)) {
+    return Number(meta.mtimeMs);
+  }
+  return 0;
+}
+
+function deleteAutomationDirectory(automationDir) {
+  if (!fs.existsSync(automationDir)) {
+    return false;
+  }
+  fs.rmSync(automationDir, { recursive: true, force: true });
+  return true;
+}
+
 function makeAutomationId(scheduledAt, rootDir) {
   const base = `at-${toLocalIdStamp(scheduledAt)}`;
   for (let i = 0; i < 1000; i += 1) {
@@ -639,6 +785,58 @@ function processPayload(raw) {
   }
 
   const now = new Date();
+  if (parsedCommand.kind === "stop") {
+    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+    const threadAutomations = listAtAutomationsForThread(codexHome, sessionId);
+    if (threadAutomations.length === 0) {
+      emitBlock("No scheduled /at or /defer prompts found for this thread.");
+      return;
+    }
+
+    let targets;
+    if (parsedCommand.scope === "all") {
+      targets = threadAutomations;
+    } else if (parsedCommand.scope === "id") {
+      targets = threadAutomations.filter(
+        (item) => String(item.id || "").trim() === String(parsedCommand.automationId || "").trim(),
+      );
+      if (targets.length === 0) {
+        emitBlock(`No scheduled prompt with id '${parsedCommand.automationId}' found in this thread. ${USAGE_STOP}`);
+        return;
+      }
+    } else {
+      const activeCandidates = threadAutomations.filter(
+        (item) => String(item.status || "").toUpperCase() === "ACTIVE",
+      );
+      const candidates = activeCandidates.length > 0 ? activeCandidates : threadAutomations;
+      targets = [
+        candidates
+          .slice()
+          .sort((left, right) => getAutomationSortTimestamp(right) - getAutomationSortTimestamp(left))[0],
+      ];
+    }
+
+    const deletedIds = [];
+    for (const target of targets) {
+      if (deleteAutomationDirectory(target.automationDir)) {
+        deletedIds.push(target.id);
+      }
+    }
+
+    if (deletedIds.length === 0) {
+      emitBlock("No scheduled prompts were removed.");
+      return;
+    }
+
+    if (deletedIds.length === 1) {
+      emitBlock(`Stopped scheduled prompt ${deletedIds[0]}.`);
+      return;
+    }
+
+    emitBlock(`Stopped ${deletedIds.length} scheduled prompts: ${deletedIds.join(", ")}.`);
+    return;
+  }
+
   if (parsedCommand.kind === "at") {
     const scheduledAt = parseScheduledDate(parsedCommand.timeText, now);
     if (!scheduledAt) {

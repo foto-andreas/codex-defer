@@ -6,6 +6,7 @@ The plugin provides:
 
 - `/at`: schedule a prompt for a concrete time in the current chat thread
 - `/defer`: schedule a prompt for 2 minutes after quota is available again
+- `/at stop`: stop pending scheduled prompts in the current thread
 
 ## Why this plugin exists
 
@@ -73,6 +74,32 @@ Examples:
 ```text
 /defer | e2e hook test
 /defer Starte den Prompt, sobald das Kontingent wieder frei ist.
+```
+
+### Stop scheduled prompts
+
+Syntax:
+
+```text
+/at stop
+/at stop all
+/at stop <automation-id>
+/defer stop
+```
+
+Behavior:
+
+- `/at stop` removes the latest pending `/at` or `/defer` automation in this thread
+- `/at stop all` removes all pending `/at` or `/defer` automations in this thread
+- `/at stop <automation-id>` removes one specific automation by id
+
+Examples:
+
+```text
+/at stop
+/at stop all
+/at stop at-20260707-224216-a1123f
+/defer stop
 ```
 
 ## Install

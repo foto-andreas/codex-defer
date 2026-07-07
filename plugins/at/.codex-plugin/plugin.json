@@ -1,7 +1,7 @@
 {
   "name": "at",
-  "version": "0.3.1",
-  "description": "Schedule /at and /defer prompts locally in the current chat thread without immediate model usage.",
+  "version": "0.3.2",
+  "description": "Schedule /at and /defer prompts locally in the current chat thread without immediate model usage, and stop them with /at stop.",
   "author": {
     "name": "Andreas Schrell"
   },
@@ -9,8 +9,8 @@
   "hooks": "./hooks/claude-codex-hooks.json",
   "interface": {
     "displayName": "/at",
-    "shortDescription": "Schedule /at and /defer locally in this chat",
-    "longDescription": "Plan a prompt for a future timestamp with /at, or defer until quota is free with /defer. Both run via local hook scheduling in this thread without immediate model execution.",
+    "shortDescription": "Schedule and stop /at and /defer locally",
+    "longDescription": "Plan a prompt for a future timestamp with /at, or defer until quota is free with /defer. Stop pending scheduled prompts with /at stop. All commands run via local hook scheduling in this thread without immediate model execution.",
     "developerName": "Andreas Schrell",
     "category": "Productivity",
     "capabilities": [
@@ -21,7 +21,9 @@
       "/at 2026-07-08 09:30 | Fasse den heutigen Stand zusammen.",
       "/at in 20 minutes | Erinnere mich an das Deployment.",
       "/at 2026-07-10T14:00+02:00 | Starte den Review-Check.",
-      "/defer | Starte den Prompt, sobald das Kontingent wieder frei ist."
+      "/defer | Starte den Prompt, sobald das Kontingent wieder frei ist.",
+      "/at stop",
+      "/at stop all"
     ]
   }
 }

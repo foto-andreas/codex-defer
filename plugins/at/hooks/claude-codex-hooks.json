@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec node \"${CLAUDE_PLUGIN_ROOT}/hooks/at-user-prompt-submit.js\"",
+            "commandWindows": "node \"$env:CLAUDE_PLUGIN_ROOT\\hooks\\at-user-prompt-submit.js\"",
+            "timeout": 10,
+            "statusMessage": "Scheduling /at or /defer locally..."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -287,13 +287,53 @@ function parseResetMs(value) {
   return Math.floor(seconds * 1000);
 }
 
-function isWindowExhausted(windowData) {
-  if (!windowData || typeof windowData !== "object") {
-    return false;
+function normalizePercentToFraction(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
   }
 
-  const usedPercent = Number(windowData.used_percent);
-  return Number.isFinite(usedPercent) && usedPercent >= 1;
+  if (numeric <= 1) {
+    return Math.max(0, numeric);
+  }
+
+  // Some runtimes report percent as 0..100 instead of 0..1.
+  if (numeric > 2 && numeric <= 100) {
+    return Math.max(0, numeric / 100);
+  }
+
+  return Math.max(0, numeric);
+}
+
+function getUsedFraction(windowData) {
+  if (!windowData || typeof windowData !== "object") {
+    return null;
+  }
+
+  const usedFromUsedPercent = normalizePercentToFraction(windowData.used_percent);
+  if (usedFromUsedPercent !== null) {
+    return usedFromUsedPercent;
+  }
+
+  const remainingFromRemainingPercent = normalizePercentToFraction(windowData.remaining_percent);
+  if (remainingFromRemainingPercent !== null) {
+    return Math.max(0, 1 - remainingFromRemainingPercent);
+  }
+
+  const usedFromUsed = normalizePercentToFraction(windowData.used);
+  if (usedFromUsed !== null) {
+    return usedFromUsed;
+  }
+
+  return null;
+}
+
+function isWindowExhausted(windowData) {
+  const usedFraction = getUsedFraction(windowData);
+  if (usedFraction === null) {
+    return false;
+  }
+  return usedFraction >= 0.999;
 }
 
 function describeLimitState(rateLimits, freeAtMs, nowMs) {

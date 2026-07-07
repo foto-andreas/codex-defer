@@ -1,6 +1,6 @@
 {
   "name": "at",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Schedule /at and /defer prompts locally in the current chat thread without immediate model usage.",
   "author": {
     "name": "Andreas Schrell"

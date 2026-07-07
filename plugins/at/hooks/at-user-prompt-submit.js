@@ -313,6 +313,31 @@ function parseResetMs(value) {
   return Math.floor(seconds * 1000);
 }
 
+function hasUsableWindowData(windowData) {
+  if (!windowData || typeof windowData !== "object") {
+    return false;
+  }
+
+  const hasUsedPercent = normalizePercentToFraction(windowData.used_percent) !== null;
+  const hasRemainingPercent = normalizePercentToFraction(windowData.remaining_percent) !== null;
+  const hasUsed = normalizePercentToFraction(windowData.used) !== null;
+  const hasReset = parseResetMs(windowData.resets_at) !== null;
+
+  return hasUsedPercent || hasRemainingPercent || hasUsed || hasReset;
+}
+
+function isUsableRateLimits(rateLimits) {
+  if (!rateLimits || typeof rateLimits !== "object") {
+    return false;
+  }
+
+  // Skip snapshots that contain only null placeholders (common in API-only chats).
+  return (
+    hasUsableWindowData(rateLimits.primary) ||
+    hasUsableWindowData(rateLimits.secondary)
+  );
+}
+
 function normalizePercentToFraction(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
@@ -549,6 +574,10 @@ function extractLatestRateLimitsFromJsonl(filePath) {
       record.payload.type === "token_count" &&
       record.payload.rate_limits
     ) {
+      if (!isUsableRateLimits(record.payload.rate_limits)) {
+        continue;
+      }
+
       return {
         filePath,
         timestamp: record.timestamp || null,

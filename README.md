@@ -160,7 +160,7 @@ Without trust, `/at`, `/defer`, and `/quota` are installed but skipped.
 
 There are two different distribution paths:
 
-- Repo marketplace (this repository): no separate OpenAI review required, suitable for personal/team distribution.
+- Repo marketplace (this repository): custom curated source that you manage yourself, suitable for personal/team distribution.
 - Public Codex Plugin Directory listing: use OpenAI app submission and review flow in the Platform Dashboard.
 
 For public listing, OpenAI currently uses the app review path and creates Codex plugin distribution from approved apps.

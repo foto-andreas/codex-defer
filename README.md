@@ -148,6 +148,23 @@ codex plugin add at@codex-defer
 codex plugin list
 ```
 
+4. Trust plugin hooks (required):
+
+- Open hook review in Codex (`/hooks` in CLI or Hooks panel in app).
+- Review the `at` plugin hook entries and mark them as trusted.
+- If hook code changes in a future plugin update, trust must be confirmed again before execution.
+
+Without trust, `/at`, `/defer`, and `/quota` are installed but skipped.
+
+## Official distribution / approval
+
+There are two different distribution paths:
+
+- Repo marketplace (this repository): no separate OpenAI review required, suitable for personal/team distribution.
+- Public Codex Plugin Directory listing: use OpenAI app submission and review flow in the Platform Dashboard.
+
+For public listing, OpenAI currently uses the app review path and creates Codex plugin distribution from approved apps.
+
 ## Update
 
 Reinstall the plugin from marketplace:

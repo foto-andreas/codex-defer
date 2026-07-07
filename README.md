@@ -69,6 +69,7 @@ Syntax:
 
 Behavior:
 
+- chooses the newest usable local snapshot by timestamp (not the first usable file)
 - if quota is currently available: schedule for `now + 2 minutes`
 - if quota is exhausted: schedule for `max(primary_reset, secondary_reset) + 2 minutes`
 
@@ -91,6 +92,7 @@ Behavior:
 
 - reads the most recent local `token_count.rate_limits` snapshot
 - prints raw and normalized values for primary (5h) and secondary (7d)
+- prints `snapshot_age_min` and `stale_for_defer` to explain whether `/defer` would accept this snapshot
 - prints the plugin decision (`Quota currently available` or exhausted window) and computed free time
 - does not schedule anything and does not call an LLM
 

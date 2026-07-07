@@ -327,11 +327,15 @@ function parseIsoDateMs(value) {
 }
 
 function parseResetMs(value) {
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    if (numeric > 1e12) {
+      return Math.floor(numeric);
+    }
+    return Math.floor(numeric * 1000);
   }
-  return Math.floor(seconds * 1000);
+
+  return parseIsoDateMs(value);
 }
 
 function hasUsableWindowData(windowData) {
@@ -489,9 +493,15 @@ function buildQuotaDebugMessage(snapshot, snapshotRole, nowDate) {
 
   const rateLimits = snapshot.rateLimits;
   const nowMsValue = nowDate.getTime();
+  const snapshotMs = parseIsoDateMs(snapshot.timestamp);
   const freeAtMs = resolveQuotaFreeAtMs(rateLimits, nowMsValue);
   const stateText = describeLimitState(rateLimits, freeAtMs, nowMsValue);
   const freeAtText = formatLocalDisplay(new Date(Math.max(nowMsValue, freeAtMs)));
+  const freshnessText =
+    snapshotMs === null
+      ? "snapshot_age_min=unknown, stale_for_defer=unknown. "
+      : `snapshot_age_min=${Math.max(0, Math.floor((nowMsValue - snapshotMs) / 60000))}, ` +
+        `stale_for_defer=${nowMsValue - snapshotMs > MAX_RATE_LIMIT_SNAPSHOT_AGE_MS}. `;
 
   return (
     `/quota ${snapshotRole}. ` +
@@ -500,6 +510,7 @@ function buildQuotaDebugMessage(snapshot, snapshotRole, nowDate) {
     `${formatWindowQuotaDebug("primary", rateLimits.primary)}. ` +
     `${formatWindowQuotaDebug("secondary", rateLimits.secondary)}. ` +
     `rate_limit_reached_type=${formatDebugValue(rateLimits.rate_limit_reached_type)}. ` +
+    freshnessText +
     `decision=${stateText}; free_at=${freeAtText}.`
   );
 }
@@ -696,6 +707,7 @@ function getMostRecentRateLimitSnapshots(codexHome, sessionId) {
   addCandidate(findSessionFileById(archivedSessionsRoot, sessionId));
 
   const recentSessions = collectJsonlFiles(sessionsRoot)
+    .concat(collectJsonlFiles(archivedSessionsRoot))
     .map((filePath) => {
       let mtimeMs = 0;
       try {
@@ -706,13 +718,28 @@ function getMostRecentRateLimitSnapshots(codexHome, sessionId) {
       return { filePath, mtimeMs };
     })
     .sort((left, right) => right.mtimeMs - left.mtimeMs)
-    .slice(0, 25);
+    .slice(0, 50);
   for (const item of recentSessions) {
     addCandidate(item.filePath);
   }
 
+  function getOrderingMs(snapshot, filePath) {
+    const timestampMs = parseIsoDateMs(snapshot && snapshot.timestamp);
+    if (timestampMs !== null) {
+      return timestampMs;
+    }
+
+    try {
+      return Number(fs.statSync(filePath).mtimeMs || 0);
+    } catch (error) {
+      return 0;
+    }
+  }
+
   let latestSnapshot = null;
   let latestSnapshotMs = -1;
+  let latestUsableSnapshot = null;
+  let latestUsableSnapshotMs = -1;
 
   for (const filePath of candidates) {
     const snapshot = extractLatestTokenCountSnapshotFromJsonl(filePath);
@@ -720,25 +747,38 @@ function getMostRecentRateLimitSnapshots(codexHome, sessionId) {
       continue;
     }
 
-    const timestampMs = parseIsoDateMs(snapshot.timestamp);
-    const orderingMs = timestampMs === null ? 0 : timestampMs;
+    const orderingMs = getOrderingMs(snapshot, filePath);
     if (!latestSnapshot || orderingMs >= latestSnapshotMs) {
       latestSnapshot = snapshot;
       latestSnapshotMs = orderingMs;
     }
 
-    if (snapshot.usable) {
-      return {
-        usableSnapshot: snapshot,
-        latestSnapshot: latestSnapshot,
-      };
+    if (snapshot.usable && (!latestUsableSnapshot || orderingMs >= latestUsableSnapshotMs)) {
+      latestUsableSnapshot = snapshot;
+      latestUsableSnapshotMs = orderingMs;
     }
   }
 
   return {
-    usableSnapshot: null,
+    usableSnapshot: latestUsableSnapshot,
     latestSnapshot,
   };
+}
+
+function describeSnapshotSelection(snapshots) {
+  if (!snapshots || !snapshots.latestSnapshot) {
+    return "no snapshot";
+  }
+
+  if (!snapshots.usableSnapshot) {
+    return "latest snapshot unusable";
+  }
+
+  if (snapshots.usableSnapshot === snapshots.latestSnapshot) {
+    return "using latest usable snapshot";
+  }
+
+  return "using latest usable snapshot; newest snapshot unusable";
 }
 
 function parseTomlStringValue(content, key) {
@@ -979,7 +1019,7 @@ function processPayload(raw) {
     const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
     const snapshots = getMostRecentRateLimitSnapshots(codexHome, sessionId);
     const debugSnapshot = snapshots.usableSnapshot || snapshots.latestSnapshot;
-    const role = snapshots.usableSnapshot ? "using usable snapshot" : "latest snapshot unusable";
+    const role = describeSnapshotSelection(snapshots);
     emitBlock(buildQuotaDebugMessage(debugSnapshot, role, now));
     return;
   }

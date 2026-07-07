@@ -6,6 +6,7 @@ The plugin provides:
 
 - `/at`: schedule a prompt for a concrete time in the current chat thread
 - `/defer`: schedule a prompt for 2 minutes after quota is available again
+- `/quota`: print local quota snapshot debug details for troubleshooting
 - `/at stop`: stop pending scheduled prompts in the current thread
 
 ## Why this plugin exists
@@ -22,12 +23,14 @@ Typical use cases:
 
 The plugin uses a local `UserPromptSubmit` hook.
 
-- On `/at` or `/defer`, the hook parses the command locally.
-- It writes a local heartbeat automation to `~/.codex/automations/<id>/automation.toml`.
+- On `/at`, `/defer`, or `/quota`, the hook parses the command locally.
+- For `/at` and `/defer`, it writes a local heartbeat automation to `~/.codex/automations/<id>/automation.toml`.
+- For `/quota`, it returns only a local debug summary and creates no automation.
 - It blocks the current turn so the command itself does not trigger an immediate model response.
 - At the scheduled time, Codex runs the stored prompt in the same thread.
 
 `/defer` uses local Codex session logs (`~/.codex/sessions/**/*.jsonl`) and reads the latest `token_count.rate_limits` snapshot.
+`/quota` uses the same local data source and returns a debug line with normalized percentages and reset timestamps.
 
 ## Command reference
 
@@ -74,6 +77,27 @@ Examples:
 ```text
 /defer | e2e hook test
 /defer Starte den Prompt, sobald das Kontingent wieder frei ist.
+```
+
+### `/quota`
+
+Syntax:
+
+```text
+/quota
+```
+
+Behavior:
+
+- reads the most recent local `token_count.rate_limits` snapshot
+- prints raw and normalized values for primary (5h) and secondary (7d)
+- prints the plugin decision (`Quota currently available` or exhausted window) and computed free time
+- does not schedule anything and does not call an LLM
+
+Example:
+
+```text
+/quota
 ```
 
 ### Stop scheduled prompts
@@ -143,6 +167,16 @@ After reinstall, open a new thread so Codex picks up updated hooks and skills.
 
 - cause: last local snapshot is too old
 - fix: run a fresh normal prompt in a quota-backed chat, then retry
+
+`/quota: no token_count snapshot found in local sessions.`
+
+- cause: no usable local quota data is present yet on this machine/profile
+- fix: run one normal prompt in a quota-backed Codex chat, then run `/quota` again
+
+`Invalid schema for function 'automation_update' ... type: "None"`
+
+- cause: Codex platform/tool schema issue, not this plugin hook
+- fix: restart Codex or open a fresh thread and retry; plugin commands `/at`, `/defer`, `/quota` work without `automation_update`
 
 `Invalid time '...'`
 

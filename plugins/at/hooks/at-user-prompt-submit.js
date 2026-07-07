@@ -11,6 +11,8 @@ const USAGE_DEFER =
   "Usage: /defer <prompt>. Example: /defer | pruefe in 2 minuten erneut";
 const USAGE_STOP =
   "Usage: /at stop [all|<id>] or /defer stop [all|<id>].";
+const USAGE_QUOTA =
+  "Usage: /quota";
 
 const TWO_MINUTES_MS = 2 * 60 * 1000;
 const MAX_RATE_LIMIT_SNAPSHOT_AGE_MS = 24 * 60 * 60 * 1000;
@@ -91,6 +93,20 @@ function parseStopPrompt(promptText) {
   return { kind: "stop", scope: "id", automationId: rawScope };
 }
 
+function parseQuotaPrompt(promptText) {
+  const trimmed = String(promptText || "").trim();
+  if (!/^\/quota\b/i.test(trimmed)) {
+    return null;
+  }
+
+  const body = trimmed.replace(/^\/quota\b/i, "").trim();
+  if (body) {
+    return { error: USAGE_QUOTA };
+  }
+
+  return { kind: "quota" };
+}
+
 function parseDeferPrompt(promptText) {
   const trimmed = String(promptText || "").trim();
   if (!/^\/defer\b/i.test(trimmed)) {
@@ -113,6 +129,11 @@ function parseCommand(promptText) {
   const stopCommand = parseStopPrompt(promptText);
   if (stopCommand) {
     return stopCommand;
+  }
+
+  const quotaCommand = parseQuotaPrompt(promptText);
+  if (quotaCommand) {
+    return quotaCommand;
   }
 
   const atCommand = parseAtPrompt(promptText);
@@ -412,6 +433,77 @@ function describeLimitState(rateLimits, freeAtMs, nowMs) {
   return "Quota currently exhausted";
 }
 
+function formatDebugValue(value) {
+  if (value === null || typeof value === "undefined") {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function formatResetDebug(windowData) {
+  if (!windowData || typeof windowData !== "object") {
+    return "null";
+  }
+
+  const rawReset = windowData.resets_at;
+  const resetMs = parseResetMs(rawReset);
+  if (resetMs === null) {
+    return formatDebugValue(rawReset);
+  }
+
+  return `${formatDebugValue(rawReset)} (${formatLocalDisplay(new Date(resetMs))})`;
+}
+
+function formatWindowQuotaDebug(label, windowData) {
+  if (!windowData || typeof windowData !== "object") {
+    return `${label}: null`;
+  }
+
+  const normalizedUsed = getUsedFraction(windowData);
+  const normalizedText =
+    normalizedUsed === null ? "n/a" : `${(normalizedUsed * 100).toFixed(2)}%`;
+
+  return (
+    `${label}: used_percent=${formatDebugValue(windowData.used_percent)}, ` +
+    `remaining_percent=${formatDebugValue(windowData.remaining_percent)}, ` +
+    `used=${formatDebugValue(windowData.used)}, ` +
+    `used_norm=${normalizedText}, exhausted=${isWindowExhausted(windowData)}, ` +
+    `resets_at=${formatResetDebug(windowData)}`
+  );
+}
+
+function buildQuotaDebugMessage(snapshot, snapshotRole, nowDate) {
+  if (!snapshot || !snapshot.rateLimits) {
+    return "/quota: no token_count snapshot found in local sessions.";
+  }
+
+  const rateLimits = snapshot.rateLimits;
+  const nowMsValue = nowDate.getTime();
+  const freeAtMs = resolveQuotaFreeAtMs(rateLimits, nowMsValue);
+  const stateText = describeLimitState(rateLimits, freeAtMs, nowMsValue);
+  const freeAtText = formatLocalDisplay(new Date(Math.max(nowMsValue, freeAtMs)));
+
+  return (
+    `/quota ${snapshotRole}. ` +
+    `snapshot_ts=${formatDebugValue(snapshot.timestamp)}, ` +
+    `source=${snapshot.filePath}. ` +
+    `${formatWindowQuotaDebug("primary", rateLimits.primary)}. ` +
+    `${formatWindowQuotaDebug("secondary", rateLimits.secondary)}. ` +
+    `rate_limit_reached_type=${formatDebugValue(rateLimits.rate_limit_reached_type)}. ` +
+    `decision=${stateText}; free_at=${freeAtText}.`
+  );
+}
+
 function resolveQuotaFreeAtMs(rateLimits, nowMs) {
   const resets = [];
   const primary = rateLimits && rateLimits.primary ? rateLimits.primary : null;
@@ -517,7 +609,7 @@ function findSessionFileById(rootDir, sessionId) {
   return null;
 }
 
-function extractLatestRateLimitsFromJsonl(filePath) {
+function extractLatestTokenCountSnapshotFromJsonl(filePath) {
   const MAX_TAIL_BYTES = 1024 * 1024;
 
   let stats;
@@ -574,14 +666,11 @@ function extractLatestRateLimitsFromJsonl(filePath) {
       record.payload.type === "token_count" &&
       record.payload.rate_limits
     ) {
-      if (!isUsableRateLimits(record.payload.rate_limits)) {
-        continue;
-      }
-
       return {
         filePath,
         timestamp: record.timestamp || null,
         rateLimits: record.payload.rate_limits,
+        usable: isUsableRateLimits(record.payload.rate_limits),
       };
     }
   }
@@ -589,7 +678,7 @@ function extractLatestRateLimitsFromJsonl(filePath) {
   return null;
 }
 
-function getMostRecentRateLimitSnapshot(codexHome, sessionId) {
+function getMostRecentRateLimitSnapshots(codexHome, sessionId) {
   const sessionsRoot = path.join(codexHome, "sessions");
   const archivedSessionsRoot = path.join(codexHome, "archived_sessions");
   const candidates = [];
@@ -622,14 +711,34 @@ function getMostRecentRateLimitSnapshot(codexHome, sessionId) {
     addCandidate(item.filePath);
   }
 
+  let latestSnapshot = null;
+  let latestSnapshotMs = -1;
+
   for (const filePath of candidates) {
-    const snapshot = extractLatestRateLimitsFromJsonl(filePath);
-    if (snapshot) {
-      return snapshot;
+    const snapshot = extractLatestTokenCountSnapshotFromJsonl(filePath);
+    if (!snapshot) {
+      continue;
+    }
+
+    const timestampMs = parseIsoDateMs(snapshot.timestamp);
+    const orderingMs = timestampMs === null ? 0 : timestampMs;
+    if (!latestSnapshot || orderingMs >= latestSnapshotMs) {
+      latestSnapshot = snapshot;
+      latestSnapshotMs = orderingMs;
+    }
+
+    if (snapshot.usable) {
+      return {
+        usableSnapshot: snapshot,
+        latestSnapshot: latestSnapshot,
+      };
     }
   }
 
-  return null;
+  return {
+    usableSnapshot: null,
+    latestSnapshot,
+  };
 }
 
 function parseTomlStringValue(content, key) {
@@ -866,6 +975,15 @@ function processPayload(raw) {
     return;
   }
 
+  if (parsedCommand.kind === "quota") {
+    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+    const snapshots = getMostRecentRateLimitSnapshots(codexHome, sessionId);
+    const debugSnapshot = snapshots.usableSnapshot || snapshots.latestSnapshot;
+    const role = snapshots.usableSnapshot ? "using usable snapshot" : "latest snapshot unusable";
+    emitBlock(buildQuotaDebugMessage(debugSnapshot, role, now));
+    return;
+  }
+
   if (parsedCommand.kind === "at") {
     const scheduledAt = parseScheduledDate(parsedCommand.timeText, now);
     if (!scheduledAt) {
@@ -892,7 +1010,8 @@ function processPayload(raw) {
 
   if (parsedCommand.kind === "defer") {
     const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-    const snapshot = getMostRecentRateLimitSnapshot(codexHome, sessionId);
+    const snapshots = getMostRecentRateLimitSnapshots(codexHome, sessionId);
+    const snapshot = snapshots.usableSnapshot;
     if (!snapshot || !snapshot.rateLimits) {
       emitBlock(
         "/defer failed: no local quota snapshot found. Run one prompt in a quota-backed Codex chat and retry.",

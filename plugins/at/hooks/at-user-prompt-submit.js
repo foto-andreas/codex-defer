@@ -411,18 +411,21 @@ function isWindowExhausted(windowData) {
   return usedFraction >= 0.999;
 }
 
+function quotaWindows(rateLimits) {
+  return [
+    { label: "5h", type: "primary", data: rateLimits && rateLimits.primary },
+    { label: "7d", type: "secondary", data: rateLimits && rateLimits.secondary },
+  ];
+}
+
 function describeLimitState(rateLimits, freeAtMs, nowMs) {
   if (freeAtMs <= nowMs) {
     return "Quota currently available";
   }
 
-  const exhausted = [];
-  if (isWindowExhausted(rateLimits && rateLimits.primary)) {
-    exhausted.push("5h");
-  }
-  if (isWindowExhausted(rateLimits && rateLimits.secondary)) {
-    exhausted.push("7d");
-  }
+  const exhausted = quotaWindows(rateLimits)
+    .filter((window) => isWindowExhausted(window.data))
+    .map((window) => window.label);
 
   if (exhausted.length > 0) {
     return `Quota currently exhausted (${exhausted.join(" + ")})`;
@@ -514,41 +517,28 @@ function getExhaustedWindowResetCandidateMs(windowData, nowMs) {
 }
 
 function resolveQuotaState(rateLimits, nowMs) {
-  const primary = rateLimits && rateLimits.primary ? rateLimits.primary : null;
-  const secondary = rateLimits && rateLimits.secondary ? rateLimits.secondary : null;
   const resets = [];
   const unresolvedExhausted = [];
 
-  const primaryReset = getExhaustedWindowResetCandidateMs(primary, nowMs);
-  if (isWindowExhausted(primary)) {
-    if (primaryReset !== null) {
-      resets.push(primaryReset);
-    } else {
-      unresolvedExhausted.push("5h");
-    }
-  }
-
-  const secondaryReset = getExhaustedWindowResetCandidateMs(secondary, nowMs);
-  if (isWindowExhausted(secondary)) {
-    if (secondaryReset !== null) {
-      resets.push(secondaryReset);
-    } else {
-      unresolvedExhausted.push("7d");
+  for (const window of quotaWindows(rateLimits)) {
+    const reset = getExhaustedWindowResetCandidateMs(window.data, nowMs);
+    if (isWindowExhausted(window.data)) {
+      if (reset !== null) {
+        resets.push(reset);
+      } else {
+        unresolvedExhausted.push(window.label);
+      }
     }
   }
 
   if (resets.length === 0) {
     const reachedType = String(rateLimits && rateLimits.rate_limit_reached_type ? rateLimits.rate_limit_reached_type : "").toLowerCase();
-    if (reachedType.includes("primary")) {
-      const fallbackPrimaryReset = parseResetMs(primary && primary.resets_at);
-      if (fallbackPrimaryReset !== null) {
-        resets.push(Math.max(nowMs, fallbackPrimaryReset));
-      }
-    }
-    if (reachedType.includes("secondary")) {
-      const fallbackSecondaryReset = parseResetMs(secondary && secondary.resets_at);
-      if (fallbackSecondaryReset !== null) {
-        resets.push(Math.max(nowMs, fallbackSecondaryReset));
+    for (const window of quotaWindows(rateLimits)) {
+      if (reachedType.includes(window.type)) {
+        const fallbackReset = parseResetMs(window.data && window.data.resets_at);
+        if (fallbackReset !== null) {
+          resets.push(Math.max(nowMs, fallbackReset));
+        }
       }
     }
   }

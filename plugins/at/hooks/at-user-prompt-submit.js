@@ -71,12 +71,12 @@ function parseAtPrompt(promptText) {
 
 function parseStopPrompt(promptText) {
   const trimmed = String(promptText || "").trim();
-  const match = trimmed.match(/^\/(at|defer)\s+(stop|cancel)(?:\s+([^\s]+))?\s*$/i);
+  const match = trimmed.match(/^\/(?:at|defer)\s+stop(?:\s+([^\s]+))?\s*$/i);
   if (!match) {
     return null;
   }
 
-  const rawScope = String(match[3] || "").trim();
+  const rawScope = String(match[1] || "").trim();
   if (!rawScope) {
     return { kind: "stop", scope: "last" };
   }
@@ -949,14 +949,6 @@ function getAutomationSortTimestamp(meta) {
   return 0;
 }
 
-function deleteAutomationDirectory(automationDir) {
-  if (!fs.existsSync(automationDir)) {
-    return false;
-  }
-  fs.rmSync(automationDir, { recursive: true, force: true });
-  return true;
-}
-
 function makeAutomationId(scheduledAt) {
   return `at-${toLocalIdStamp(scheduledAt)}-${crypto.randomUUID().slice(0, 8)}`;
 }
@@ -1044,7 +1036,8 @@ function processPayload(raw) {
 
     const deletedIds = [];
     for (const target of targets) {
-      if (deleteAutomationDirectory(target.automationDir)) {
+      if (fs.existsSync(target.automationDir)) {
+        fs.rmSync(target.automationDir, { recursive: true, force: true });
         deletedIds.push(target.id);
       }
     }

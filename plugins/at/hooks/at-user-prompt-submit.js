@@ -680,38 +680,6 @@ function collectJsonlFiles(rootDir) {
   return files;
 }
 
-function findSessionFileById(rootDir, sessionId) {
-  if (!sessionId || !fs.existsSync(rootDir)) {
-    return null;
-  }
-
-  const suffix = `-${sessionId}.jsonl`.toLowerCase();
-  const stack = [rootDir];
-  while (stack.length > 0) {
-    const currentDir = stack.pop();
-    let entries;
-    try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch (error) {
-      continue;
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(fullPath);
-        continue;
-      }
-
-      if (entry.isFile() && entry.name.toLowerCase().endsWith(suffix)) {
-        return fullPath;
-      }
-    }
-  }
-
-  return null;
-}
-
 function extractLatestTokenCountSnapshotFromJsonl(filePath) {
   const MAX_TAIL_BYTES = 1024 * 1024;
 
@@ -782,10 +750,13 @@ function extractLatestTokenCountSnapshotFromJsonl(filePath) {
 }
 
 function getMostRecentRateLimitSnapshots(codexHome, sessionId) {
-  const sessionsRoot = path.join(codexHome, "sessions");
-  const archivedSessionsRoot = path.join(codexHome, "archived_sessions");
+  const sessionRoots = [
+    path.join(codexHome, "sessions"),
+    path.join(codexHome, "archived_sessions"),
+  ];
   const candidates = [];
   const seen = new Set();
+  const sessionSuffix = sessionId ? `-${sessionId}.jsonl`.toLowerCase() : null;
 
   function addCandidate(filePath) {
     if (!filePath || seen.has(filePath)) {
@@ -795,11 +766,14 @@ function getMostRecentRateLimitSnapshots(codexHome, sessionId) {
     candidates.push(filePath);
   }
 
-  addCandidate(findSessionFileById(sessionsRoot, sessionId));
-  addCandidate(findSessionFileById(archivedSessionsRoot, sessionId));
+  const sessionFiles = sessionRoots.flatMap((rootDir) => collectJsonlFiles(rootDir));
+  for (const filePath of sessionFiles) {
+    if (sessionSuffix && path.basename(filePath).toLowerCase().endsWith(sessionSuffix)) {
+      addCandidate(filePath);
+    }
+  }
 
-  const recentSessions = collectJsonlFiles(sessionsRoot)
-    .concat(collectJsonlFiles(archivedSessionsRoot))
+  const recentSessions = sessionFiles
     .map((filePath) => {
       let mtimeMs = 0;
       try {

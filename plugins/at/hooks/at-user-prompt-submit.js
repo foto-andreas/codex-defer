@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("fs");
+const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
 
@@ -20,10 +21,6 @@ const MAX_AVAILABLE_QUOTA_SNAPSHOT_AGE_MS = 2 * 60 * 60 * 1000;
 
 function pad2(value) {
   return String(value).padStart(2, "0");
-}
-
-function nowMs() {
-  return Date.now();
 }
 
 function tomlEscape(value) {
@@ -280,16 +277,7 @@ function parseScheduledDate(timeText, now) {
 }
 
 function toUtcTimestamp(date) {
-  return (
-    String(date.getUTCFullYear()) +
-    pad2(date.getUTCMonth() + 1) +
-    pad2(date.getUTCDate()) +
-    "T" +
-    pad2(date.getUTCHours()) +
-    pad2(date.getUTCMinutes()) +
-    pad2(date.getUTCSeconds()) +
-    "Z"
-  );
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
 
 function toLocalIdStamp(date) {
@@ -1005,16 +993,8 @@ function deleteAutomationDirectory(automationDir) {
   return true;
 }
 
-function makeAutomationId(scheduledAt, rootDir) {
-  const base = `at-${toLocalIdStamp(scheduledAt)}`;
-  for (let i = 0; i < 1000; i += 1) {
-    const suffix = Math.random().toString(16).slice(2, 8).padEnd(6, "0");
-    const candidate = `${base}-${suffix}`;
-    if (!fs.existsSync(path.join(rootDir, candidate))) {
-      return candidate;
-    }
-  }
-  throw new Error("could not allocate unique automation id");
+function makeAutomationId(scheduledAt) {
+  return `at-${toLocalIdStamp(scheduledAt)}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
 function writeHeartbeatAutomation(sessionId, scheduledAt, scheduledPrompt) {
@@ -1022,13 +1002,13 @@ function writeHeartbeatAutomation(sessionId, scheduledAt, scheduledPrompt) {
   const automationsRoot = path.join(codexHome, "automations");
   fs.mkdirSync(automationsRoot, { recursive: true });
 
-  const automationId = makeAutomationId(scheduledAt, automationsRoot);
+  const automationId = makeAutomationId(scheduledAt);
   const automationDir = path.join(automationsRoot, automationId);
   fs.mkdirSync(automationDir, { recursive: false });
 
   const utcStart = toUtcTimestamp(scheduledAt);
   const rruleValue = `DTSTART:${utcStart}\nRRULE:FREQ=MINUTELY;COUNT=1`;
-  const timestampMs = nowMs();
+  const timestampMs = Date.now();
 
   const lines = [
     "version = 1",

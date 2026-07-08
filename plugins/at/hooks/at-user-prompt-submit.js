@@ -18,9 +18,6 @@ const TWO_MINUTES_MS = 2 * 60 * 1000;
 const MAX_RATE_LIMIT_SNAPSHOT_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_AVAILABLE_QUOTA_SNAPSHOT_AGE_MS = 2 * 60 * 60 * 1000;
 
-let inputBuffer = "";
-let finished = false;
-
 function pad2(value) {
   return String(value).padStart(2, "0");
 }
@@ -1222,37 +1219,15 @@ function processPayload(raw) {
   }
 }
 
-function finish() {
-  if (finished) {
-    return;
+try {
+  const input = fs.readFileSync(0, "utf8").trim();
+  if (input) {
+    processPayload(input);
   }
-  finished = true;
-
-  const trimmed = inputBuffer.trim();
-  if (!trimmed) {
-    return;
-  }
-
-  try {
-    processPayload(inputBuffer);
-  } catch (error) {
-    const message =
-      error && typeof error.message === "string" && error.message.trim()
-        ? error.message.trim()
-        : "unknown error";
-    emitBlock(`/at failed: ${message}`);
-  }
+} catch (error) {
+  const message =
+    error && typeof error.message === "string" && error.message.trim()
+      ? error.message.trim()
+      : "unknown error";
+  emitBlock(`/at failed: ${message}`);
 }
-
-process.stdin.on("data", (chunk) => {
-  inputBuffer += chunk;
-});
-process.stdin.on("end", finish);
-process.stdin.on("error", () => {
-  finish();
-  process.exit(0);
-});
-setTimeout(() => {
-  finish();
-  process.exit(0);
-}, 1000).unref();

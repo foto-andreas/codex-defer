@@ -18,14 +18,10 @@
       "Write"
     ],
     "defaultPrompt": [
-      "/at 2026-07-08 09:30 | Fasse den heutigen Stand zusammen.",
       "/at in 20 minutes | Erinnere mich an das Deployment.",
-      "/at 2026-07-10T14:00+02:00 | Starte den Review-Check.",
       "/defer | Starte den Prompt, sobald das Kontingent wieder frei ist.",
       "/quota",
-      "/at stop",
-      "/at stop all",
-      "/defer stop"
+      "/at stop"
     ]
   }
 }

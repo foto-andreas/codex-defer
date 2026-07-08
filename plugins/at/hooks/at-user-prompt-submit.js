@@ -16,6 +16,7 @@ const USAGE_QUOTA =
 
 const TWO_MINUTES_MS = 2 * 60 * 1000;
 const MAX_RATE_LIMIT_SNAPSHOT_AGE_MS = 24 * 60 * 60 * 1000;
+const MAX_AVAILABLE_QUOTA_SNAPSHOT_AGE_MS = 2 * 60 * 60 * 1000;
 
 let inputBuffer = "";
 let finished = false;
@@ -338,6 +339,19 @@ function parseResetMs(value) {
   return parseIsoDateMs(value);
 }
 
+function parseWindowMinutesMs(windowData) {
+  if (!windowData || typeof windowData !== "object") {
+    return null;
+  }
+
+  const minutes = Number(windowData.window_minutes);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return null;
+  }
+
+  return Math.floor(minutes * 60 * 1000);
+}
+
 function hasUsableWindowData(windowData) {
   if (!windowData || typeof windowData !== "object") {
     return false;
@@ -486,6 +500,139 @@ function formatWindowQuotaDebug(label, windowData) {
   );
 }
 
+function getExhaustedWindowResetCandidateMs(windowData, nowMs) {
+  if (!isWindowExhausted(windowData)) {
+    return null;
+  }
+
+  const resetMs = parseResetMs(windowData && windowData.resets_at);
+  if (resetMs !== null && resetMs > nowMs) {
+    return resetMs;
+  }
+
+  const windowMs = parseWindowMinutesMs(windowData);
+  if (windowMs === null) {
+    return null;
+  }
+
+  if (resetMs !== null) {
+    let projectedMs = resetMs;
+    for (let step = 0; step < 10000 && projectedMs <= nowMs; step += 1) {
+      projectedMs += windowMs;
+    }
+    if (projectedMs > nowMs) {
+      return projectedMs;
+    }
+  }
+
+  return nowMs + windowMs;
+}
+
+function resolveQuotaState(rateLimits, nowMs) {
+  const primary = rateLimits && rateLimits.primary ? rateLimits.primary : null;
+  const secondary = rateLimits && rateLimits.secondary ? rateLimits.secondary : null;
+  const resets = [];
+  const unresolvedExhausted = [];
+
+  const primaryReset = getExhaustedWindowResetCandidateMs(primary, nowMs);
+  if (isWindowExhausted(primary)) {
+    if (primaryReset !== null) {
+      resets.push(primaryReset);
+    } else {
+      unresolvedExhausted.push("5h");
+    }
+  }
+
+  const secondaryReset = getExhaustedWindowResetCandidateMs(secondary, nowMs);
+  if (isWindowExhausted(secondary)) {
+    if (secondaryReset !== null) {
+      resets.push(secondaryReset);
+    } else {
+      unresolvedExhausted.push("7d");
+    }
+  }
+
+  if (resets.length === 0) {
+    const reachedType = String(rateLimits && rateLimits.rate_limit_reached_type ? rateLimits.rate_limit_reached_type : "").toLowerCase();
+    if (reachedType.includes("primary")) {
+      const fallbackPrimaryReset = parseResetMs(primary && primary.resets_at);
+      if (fallbackPrimaryReset !== null) {
+        resets.push(Math.max(nowMs, fallbackPrimaryReset));
+      }
+    }
+    if (reachedType.includes("secondary")) {
+      const fallbackSecondaryReset = parseResetMs(secondary && secondary.resets_at);
+      if (fallbackSecondaryReset !== null) {
+        resets.push(Math.max(nowMs, fallbackSecondaryReset));
+      }
+    }
+  }
+
+  if (resets.length === 0) {
+    return {
+      freeAtMs: nowMs,
+      unresolvedExhausted,
+    };
+  }
+
+  return {
+    freeAtMs: Math.max(nowMs, ...resets),
+    unresolvedExhausted,
+  };
+}
+
+function evaluateDeferScheduling(rateLimits, snapshotMs, nowMs) {
+  const quotaState = resolveQuotaState(rateLimits, nowMs);
+  const freeAtMs = quotaState.freeAtMs;
+  const stateText = describeLimitState(rateLimits, freeAtMs, nowMs);
+
+  if (quotaState.unresolvedExhausted.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `defer_unresolved_reset:${quotaState.unresolvedExhausted.join("+")}`,
+      freeAtMs,
+      stateText,
+    };
+  }
+
+  if (snapshotMs !== null && nowMs - snapshotMs > MAX_RATE_LIMIT_SNAPSHOT_AGE_MS) {
+    return {
+      ok: false,
+      reason: "defer_snapshot_stale",
+      freeAtMs,
+      stateText,
+    };
+  }
+
+  if (freeAtMs <= nowMs) {
+    if (snapshotMs === null) {
+      return {
+        ok: false,
+        reason: "defer_snapshot_timestamp_missing_for_available_quota",
+        freeAtMs,
+        stateText,
+      };
+    }
+
+    if (nowMs - snapshotMs > MAX_AVAILABLE_QUOTA_SNAPSHOT_AGE_MS) {
+      return {
+        ok: false,
+        reason: "defer_available_snapshot_too_old",
+        freeAtMs,
+        stateText,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    reason: "ok",
+    freeAtMs,
+    stateText,
+  };
+}
+
 function buildQuotaDebugMessage(snapshot, snapshotRole, nowDate) {
   if (!snapshot || !snapshot.rateLimits) {
     return "/quota: no token_count snapshot found in local sessions.";
@@ -494,14 +641,16 @@ function buildQuotaDebugMessage(snapshot, snapshotRole, nowDate) {
   const rateLimits = snapshot.rateLimits;
   const nowMsValue = nowDate.getTime();
   const snapshotMs = parseIsoDateMs(snapshot.timestamp);
-  const freeAtMs = resolveQuotaFreeAtMs(rateLimits, nowMsValue);
-  const stateText = describeLimitState(rateLimits, freeAtMs, nowMsValue);
+  const deferEval = evaluateDeferScheduling(rateLimits, snapshotMs, nowMsValue);
+  const freeAtMs = deferEval.freeAtMs;
+  const stateText = deferEval.stateText;
   const freeAtText = formatLocalDisplay(new Date(Math.max(nowMsValue, freeAtMs)));
   const freshnessText =
     snapshotMs === null
       ? "snapshot_age_min=unknown, stale_for_defer=unknown. "
       : `snapshot_age_min=${Math.max(0, Math.floor((nowMsValue - snapshotMs) / 60000))}, ` +
-        `stale_for_defer=${nowMsValue - snapshotMs > MAX_RATE_LIMIT_SNAPSHOT_AGE_MS}. `;
+        `stale_for_defer=${nowMsValue - snapshotMs > MAX_RATE_LIMIT_SNAPSHOT_AGE_MS}, ` +
+        `stale_for_available=${nowMsValue - snapshotMs > MAX_AVAILABLE_QUOTA_SNAPSHOT_AGE_MS}. `;
 
   return (
     `/quota ${snapshotRole}. ` +
@@ -511,50 +660,8 @@ function buildQuotaDebugMessage(snapshot, snapshotRole, nowDate) {
     `${formatWindowQuotaDebug("secondary", rateLimits.secondary)}. ` +
     `rate_limit_reached_type=${formatDebugValue(rateLimits.rate_limit_reached_type)}. ` +
     freshnessText +
-    `decision=${stateText}; free_at=${freeAtText}.`
+    `decision=${stateText}; free_at=${freeAtText}; defer_ready=${deferEval.ok}; defer_reason=${deferEval.reason}.`
   );
-}
-
-function resolveQuotaFreeAtMs(rateLimits, nowMs) {
-  const resets = [];
-  const primary = rateLimits && rateLimits.primary ? rateLimits.primary : null;
-  const secondary = rateLimits && rateLimits.secondary ? rateLimits.secondary : null;
-
-  if (isWindowExhausted(primary)) {
-    const primaryReset = parseResetMs(primary && primary.resets_at);
-    if (primaryReset !== null) {
-      resets.push(primaryReset);
-    }
-  }
-
-  if (isWindowExhausted(secondary)) {
-    const secondaryReset = parseResetMs(secondary && secondary.resets_at);
-    if (secondaryReset !== null) {
-      resets.push(secondaryReset);
-    }
-  }
-
-  if (resets.length === 0) {
-    const reachedType = String(rateLimits && rateLimits.rate_limit_reached_type ? rateLimits.rate_limit_reached_type : "").toLowerCase();
-    if (reachedType.includes("primary")) {
-      const primaryReset = parseResetMs(primary && primary.resets_at);
-      if (primaryReset !== null) {
-        resets.push(primaryReset);
-      }
-    }
-    if (reachedType.includes("secondary")) {
-      const secondaryReset = parseResetMs(secondary && secondary.resets_at);
-      if (secondaryReset !== null) {
-        resets.push(secondaryReset);
-      }
-    }
-  }
-
-  if (resets.length === 0) {
-    return nowMs;
-  }
-
-  return Math.max(nowMs, ...resets);
 }
 
 function collectJsonlFiles(rootDir) {
@@ -1061,7 +1168,8 @@ function processPayload(raw) {
 
     const nowMs = now.getTime();
     const snapshotMs = parseIsoDateMs(snapshot.timestamp);
-    if (snapshotMs !== null && nowMs - snapshotMs > MAX_RATE_LIMIT_SNAPSHOT_AGE_MS) {
+    const deferEval = evaluateDeferScheduling(snapshot.rateLimits, snapshotMs, nowMs);
+    if (!deferEval.ok && deferEval.reason === "defer_snapshot_stale" && snapshotMs !== null) {
       const snapshotAt = new Date(snapshotMs);
       emitBlock(
         `/defer failed: local quota snapshot is stale (${formatLocalDisplay(snapshotAt)}). Run one prompt in a quota-backed Codex chat and retry.`,
@@ -1069,7 +1177,36 @@ function processPayload(raw) {
       return;
     }
 
-    const freeAtMs = resolveQuotaFreeAtMs(snapshot.rateLimits, nowMs);
+    if (!deferEval.ok && deferEval.reason === "defer_available_snapshot_too_old" && snapshotMs !== null) {
+      const snapshotAt = new Date(snapshotMs);
+      emitBlock(
+        `/defer failed: local quota snapshot is too old to confirm currently available quota (${formatLocalDisplay(snapshotAt)}). Run /quota in a quota-backed Codex chat and retry.`,
+      );
+      return;
+    }
+
+    if (!deferEval.ok && deferEval.reason === "defer_snapshot_timestamp_missing_for_available_quota") {
+      emitBlock(
+        "/defer failed: local quota snapshot has no usable timestamp while quota appears available. Run /quota in a quota-backed Codex chat and retry.",
+      );
+      return;
+    }
+
+    if (!deferEval.ok && deferEval.reason.startsWith("defer_unresolved_reset:")) {
+      emitBlock(
+        "/defer failed: exhausted quota window has no usable reset timestamp. Run /quota in a quota-backed Codex chat and retry.",
+      );
+      return;
+    }
+
+    if (!deferEval.ok) {
+      emitBlock(
+        `/defer failed: quota evaluation returned '${deferEval.reason}'. Run /quota and retry.`,
+      );
+      return;
+    }
+
+    const freeAtMs = deferEval.freeAtMs;
     const scheduledAt = new Date(Math.max(nowMs, freeAtMs) + TWO_MINUTES_MS);
     const automationId = writeHeartbeatAutomation(
       sessionId,
@@ -1077,7 +1214,7 @@ function processPayload(raw) {
       parsedCommand.scheduledPrompt,
     );
 
-    const stateText = describeLimitState(snapshot.rateLimits, freeAtMs, nowMs);
+    const stateText = deferEval.stateText;
     const snapshotText = snapshot.timestamp ? ` Snapshot: ${snapshot.timestamp}.` : "";
     emitBlock(
       `/defer scheduled locally for ${formatLocalDisplay(scheduledAt)} as ${automationId}. ${stateText}.${snapshotText} Prompt will run later in this same thread.`,

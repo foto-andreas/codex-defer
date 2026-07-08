@@ -47,9 +47,11 @@ Use `/quota` in this format:
 - It blocks this turn so no immediate model call is made.
 - `/defer` reads the latest local `rate_limits` snapshot from `~/.codex/sessions/**/*.jsonl`.
 - If a rate-limit window is exhausted, it schedules for `reset + 2 minutes`.
-- If quota is currently available, it schedules for `now + 2 minutes`.
+- If quota is currently available, it schedules for `now + 2 minutes` only with a fresh-enough snapshot.
+- If the snapshot is too old to safely confirm "available", `/defer` blocks with a diagnostic.
+- If an exhausted window has no usable reset timestamp, `/defer` blocks with a diagnostic.
 - If no fresh local quota snapshot exists, `/defer` blocks with an error and does not schedule.
-- `/quota` prints a debug summary of the newest local quota snapshot, including normalized percentages and chosen free time.
+- `/quota` prints a debug summary of the newest local quota snapshot, including normalized percentages, chosen free time, and `defer_ready/defer_reason`.
 - `/at stop` removes the latest scheduled prompt in the current thread.
 - `/at stop all` removes all scheduled prompts in the current thread.
 - `/at stop <id>` removes one specific scheduled prompt by id.

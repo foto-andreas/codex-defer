@@ -70,8 +70,10 @@ Syntax:
 Behavior:
 
 - chooses the newest usable local snapshot by timestamp (not the first usable file)
-- if quota is currently available: schedule for `now + 2 minutes`
+- if quota is currently available: schedule for `now + 2 minutes` only when the snapshot is fresh enough
 - if quota is exhausted: schedule for `max(primary_reset, secondary_reset) + 2 minutes`
+- if available-quota snapshot is too old, `/defer` fails with a diagnostic instead of scheduling too early
+- if an exhausted window has no usable reset, `/defer` fails with a diagnostic instead of guessing
 
 Examples:
 
@@ -92,8 +94,9 @@ Behavior:
 
 - reads the most recent local `token_count.rate_limits` snapshot
 - prints raw and normalized values for primary (5h) and secondary (7d)
-- prints `snapshot_age_min` and `stale_for_defer` to explain whether `/defer` would accept this snapshot
+- prints `snapshot_age_min`, `stale_for_defer`, and `stale_for_available`
 - prints the plugin decision (`Quota currently available` or exhausted window) and computed free time
+- prints `defer_ready` and `defer_reason` for `/defer` debugging
 - does not schedule anything and does not call an LLM
 
 Example:
@@ -187,6 +190,16 @@ After reinstall, open a new thread so Codex picks up updated hooks and skills.
 - cause: last local snapshot is too old
 - fix: run a fresh normal prompt in a quota-backed chat, then retry
 
+`/defer failed: local quota snapshot is too old to confirm currently available quota (...)`
+
+- cause: snapshot says quota is available, but timestamp is too old for a safe immediate defer schedule
+- fix: run a fresh normal prompt in a quota-backed chat, then retry `/defer`
+
+`/defer failed: exhausted quota window has no usable reset timestamp.`
+
+- cause: quota window is exhausted but no reliable reset timestamp could be resolved
+- fix: run `/quota` in a quota-backed chat, then retry when a fresh snapshot is available
+
 `/quota: no token_count snapshot found in local sessions.`
 
 - cause: no usable local quota data is present yet on this machine/profile
@@ -211,6 +224,7 @@ No automation is created when command is sent
 ## Notes and limitations
 
 - `/defer` depends on local session logs and cannot infer quota from API-only contexts without local snapshots.
+- `/defer` intentionally refuses immediate scheduling from old “quota available” snapshots to avoid false positives.
 - Scheduled execution still needs available quota at execution time.
 - This plugin is optimized for local Codex desktop workflows.
 
